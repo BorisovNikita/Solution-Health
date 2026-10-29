@@ -1,0 +1,33 @@
+@startuml
+!include https://raw.githubusercontent.com/plantuml-stdlib/C4-PlantUML/master/C4_Context.puml
+
+title Решение для снижения нагрузки на 1С (C4 Level 1)
+
+Person(patient, "Пациент", "Использует мобильное приложение")
+
+System(mobile_app, "Мобильное приложение", "Клиентский интерфейс")
+System(api_gw, "API Gateway", "Rate Limiting, Circuit Breaker")
+
+System_Boundary(bff_boundary, "Слой BFF и кэширования") {
+    System(bff, "BFF (Backend for Frontend)", "Логика проверки полиса. Request Collapsing: объединение одинаковых запросов.")
+    SystemDb(redis, "Redis Cache", "Кэш статусов полисов (TTL 30 мин)")
+}
+
+System(policy_1c, "1С: Полисы", "Legacy-система. Лимит: 50 RPS. Тайм-аут: 3 сек.")
+
+Rel(patient, mobile_app, "Запрашивает проверку полиса", "HTTPS")
+Rel(mobile_app, api_gw, "REST API", "HTTPS")
+Rel(api_gw, bff, "Маршрутизация", "gRPC/REST")
+
+Rel(bff, redis, "1. Проверка кэша", "Redis protocol")
+Rel(bff, policy_1c, "2. Запрос при промахе кэша", "HTTP [Sync]")
+
+note right of bff
+  <b>Механизм снижения нагрузки:</b>
+  1. BFF ищет полис в Redis.
+  2. Если найден (Cache Hit) -> ответ без 1С.
+  3. Если нет (Cache Miss) -> BFF отправляет ОДИН запрос в 1С (с Circuit Breaker).
+  4. Результат сохраняется в Redis на 30 минут.
+  5. Параллельные запросы ждут результат первого.
+end note
+@enduml
