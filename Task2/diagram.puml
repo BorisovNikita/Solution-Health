@@ -1,0 +1,65 @@
+@startuml
+!include https://raw.githubusercontent.com/plantuml-stdlib/C4-PlantUML/master/C4_Context.puml
+
+title Контекстная диаграмма целевой архитектуры "Здоровье+" (C4 Level 1)
+
+Person(patient, "Пациент", "Использует мобильное приложение для записи, оплаты и просмотра анализов")
+Person(doctor, "Врач", "Управляет расписанием, просматривает анализы")
+Person(lab, "Лаборант", "Просматривает результаты в LIS")
+
+System(mobile_app, "Мобильное приложение", "Новый клиентский интерфейс (iOS/Android)")
+
+System_Boundary(zdorovie, "ИТ-ландшафт Здоровье+") {
+    System(api_gw, "API Gateway", "Единая точка входа, Rate Limiting, Circuit Breaker, OAuth2")
+    System(bff, "BFF (Backend for Frontend)", "Агрегация данных, кэширование, адаптация API под мобильные клиенты")
+    
+    System(saga, "Saga Orchestrator", "Управление распределенными транзакциями (Паттерн: Оркестрация)")
+    
+    System(schedule, "Расписание", "Управление слотами и записями (Java, PostgreSQL)")
+    System(crm, "CRM", "Карточки пациентов, история (Java, PostgreSQL)")
+    System(lis, "LIS", "Лабораторная система (SOAP, FTP)")
+    System(policy, "1С: Полисы", "Проверка ДМС (HTTP-шлюз)")
+    System(notify, "Сервис уведомлений", "Отправка пушей, SMS, Email")
+    System(web_portal, "Веб-портал", "Существующий интерфейс для врачей и администраторов")
+    
+    System_Boundary(data_layer, "Слой данных и шины") {
+        SystemQueue(event_bus, "Event Bus (Kafka)", "Асинхронная передача событий (Паттерн: Хореография)")
+        SystemDb(cache, "Redis Cache", "Кэш для быстрых ответов (расписание, анализы)")
+    }
+}
+
+System_Ext(payment, "Платёжный шлюз", "Внешний провайдер (REST API)")
+
+' Взаимодействие акторов
+Rel(patient, mobile_app, "Записывается, оплачивает, смотрит анализы", "HTTPS [Sync]")
+Rel(doctor, web_portal, "Управляет расписанием, смотрит анализы", "HTTPS [Sync]")
+Rel(lab, lis, "Просматривает результаты", "UI [Sync]")
+
+' Синхронные запросы к API Gateway и BFF
+Rel(mobile_app, api_gw, "Все запросы", "HTTPS / REST [Sync]")
+Rel(api_gw, bff, "Маршрутизация с rate limiting", "gRPC/REST [Sync]")
+Rel(web_portal, api_gw, "Обслуживание legacy веб-портала", "HTTPS [Sync]")
+
+' Синхронные запросы от BFF (чтение данных)
+Rel(bff, saga, "Запуск сценария записи/оплаты", "REST [Sync]")
+Rel(bff, cache, "Чтение данных", "Redis protocol [Sync]")
+Rel(bff, schedule, "Чтение слотов", "REST [Sync]")
+Rel(bff, crm, "Чтение профиля и анализов", "REST [Sync]")
+
+' SAGA: Оркестрация (Saga Orchestrator управляет транзакцией)
+Rel(saga, schedule, "1. Бронирование слота", "REST [Sync]")
+Rel(saga, policy, "2. Проверка полиса (Circuit Breaker)", "HTTP [Sync]")
+Rel(saga, payment, "3. Списание средств", "REST [Sync]")
+Rel(saga, event_bus, "4. Публикация события 'Запись создана' (Outbox)", "Kafka [Async]")
+
+' SAGA: Хореография (Событийная передача данных)
+Rel(lis, event_bus, "Передача результатов анализов (Pub/Sub)", "Kafka [Async]")
+Rel(event_bus, crm, "Обновление анализов в карточке (Consumer)", "Kafka [Async]")
+Rel(event_bus, notify, "Триггер отправки пуша", "Kafka [Async]")
+
+Rel(notify, patient, "Push / SMS", "Асинхронно [Async]")
+
+Rel(schedule, event_bus, "Публикация изменений слотов (Outbox)", "Kafka [Async]")
+Rel(event_bus, cache, "Инвалидация кэша слотов", "Kafka [Async]")
+
+@enduml
